@@ -7,7 +7,7 @@ import { DataType, tensorDataTypeEnumToString } from '../wasm-common';
 
 import { configureLogger, LOG_DEBUG } from './log';
 import { createView, TensorView } from './tensor-view';
-import { createGpuDataManager, downloadGpuData, GpuDataManager } from './webgpu/gpu-data-manager';
+import { createGpuDataManager, GpuDataManager } from './webgpu/gpu-data-manager';
 import { RunFunction, WEBGPU_OP_RESOLVE_RULES } from './webgpu/op-resolve-rules';
 import { ProgramManager } from './webgpu/program-manager';
 import {
@@ -202,8 +202,9 @@ export class WebGpuBackend {
 
   // info of kernels pending submission for a single batch
   private pendingKernels: PendingKernelInfo[] = [];
-  // queryReadBuffer -> pendingKernels mapping for all the batches
+  // queryStagingBuffer -> pendingKernels mapping for all the batches
   private pendingQueries: Map<GPUBuffer, PendingKernelInfo[]> = new Map();
+  private queryResolveBufferData: GpuData;
   private queryResolveBuffer?: GPUBuffer;
   private querySet?: GPUQuerySet;
   private queryTimeBase?: bigint;
@@ -336,7 +337,8 @@ export class WebGpuBackend {
     TRACE_FUNC_BEGIN();
 
     this.endComputePass();
-    let queryReadBuffer: GPUBuffer;
+    let queryStagingBufferData: GpuData;
+    let queryStagingBuffer: GPUBuffer;
     if (this.queryType !== 'none') {
       this.commandEncoder.resolveQuerySet(
         this.querySet!,
@@ -346,31 +348,37 @@ export class WebGpuBackend {
         0,
       );
 
-      queryReadBuffer = this.device.createBuffer(
+      queryStagingBufferData = this.gpuDataManager.getBuffer({
+        size: this.pendingDispatchNumber * 2 * 8,
         // eslint-disable-next-line no-bitwise
-        { size: this.pendingDispatchNumber * 2 * 8, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST },
-      );
+        usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      queryStagingBuffer = queryStagingBufferData.buffer;
 
-      this.pendingQueries.set(queryReadBuffer, this.pendingKernels);
+      this.pendingQueries.set(queryStagingBuffer, this.pendingKernels);
       this.pendingKernels = [];
       this.commandEncoder.copyBufferToBuffer(
         this.queryResolveBuffer!,
         0,
-        queryReadBuffer,
+        queryStagingBuffer,
         0,
         this.pendingDispatchNumber * 2 * 8,
       );
     }
 
     this.device.queue.submit([this.commandEncoder.finish()]);
+    if (this.queryType !== 'none') {
+      this.gpuDataManager.release(this.queryResolveBufferData.id);
+    }
+
     this.gpuDataManager.refreshPendingBuffers();
     this.commandEncoder = null;
     this.pendingDispatchNumber = 0;
 
     if (this.queryType !== 'none') {
-      void queryReadBuffer!.mapAsync(GPUMapMode.READ).then(() => {
-        const mappedData = new BigUint64Array(queryReadBuffer.getMappedRange());
-        const pendingKernels = this.pendingQueries.get(queryReadBuffer)!;
+      void queryStagingBuffer!.mapAsync(GPUMapMode.READ).then(() => {
+        const mappedData = new BigUint64Array(queryStagingBuffer.getMappedRange());
+        const pendingKernels = this.pendingQueries.get(queryStagingBuffer)!;
         for (let i = 0; i < mappedData.length / 2; i++) {
           const pendingKernelInfo = pendingKernels[i];
           const kernelId = pendingKernelInfo.kernelId;
@@ -431,8 +439,9 @@ export class WebGpuBackend {
           }
           TRACE('GPU', `${programName}::${startTimeU64}::${endTimeU64}`);
         }
-        queryReadBuffer.unmap();
-        this.pendingQueries.delete(queryReadBuffer);
+        queryStagingBuffer.unmap();
+        this.pendingQueries.delete(queryStagingBuffer);
+        this.gpuDataManager.release(queryStagingBufferData.id);
       });
     }
     TRACE_FUNC_END();
@@ -603,9 +612,9 @@ export class WebGpuBackend {
 
       const uniformBufferData =
         // eslint-disable-next-line no-bitwise
-        this.gpuDataManager.create(currentOffset, GPUBufferUsage.COPY_DST | GPUBufferUsage.UNIFORM);
+        this.gpuDataManager.getBuffer({ size: currentOffset, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.UNIFORM });
       this.device.queue.writeBuffer(uniformBufferData.buffer, 0, arrayBuffer, 0, currentOffset);
-      this.gpuDataManager.release(uniformBufferData.id);
+      this.gpuDataManager.release(uniformBufferData.id, true);
       uniformBufferBinding = { offset: 0, size: currentOffset, buffer: uniformBufferData.buffer };
     }
 
@@ -688,7 +697,11 @@ export class WebGpuBackend {
   }
 
   alloc(size: number): number {
-    return this.gpuDataManager.create(size).id;
+    return this.gpuDataManager.getBuffer({
+      size,
+      // eslint-disable-next-line no-bitwise
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+    }).id;
   }
 
   free(ptr: number): number {
@@ -732,6 +745,7 @@ export class WebGpuBackend {
     const kernelName = kernel.kernelName;
     const kernelEntry = kernel.kernelEntry;
     const attributes = kernel.attributes;
+    LOG_DEBUG('info', () => `Begin of ${kernel.kernelName}`);
     if (this.currentKernelId !== null) {
       throw new Error(`kernel "[${kernelType}] ${kernelName}" is not allowed to be called recursively`);
     }
@@ -754,6 +768,7 @@ export class WebGpuBackend {
       }
 
       kernelEntry(context, attributes[1]);
+      LOG_DEBUG('info', () => `End of ${kernel.kernelName}`);
       return 0; // ORT_OK
     } catch (e) {
       errors.push(Promise.resolve(`[WebGPU] Kernel "[${kernelType}] ${kernelName}" failed. ${e}`));
@@ -815,7 +830,7 @@ export class WebGpuBackend {
     type: Tensor.GpuBufferDataTypes,
   ): () => Promise<Tensor.DataType> {
     return async () => {
-      const data = await downloadGpuData(this, gpuBuffer, size);
+      const data = await this.gpuDataManager.downloadGpuData(gpuBuffer, size);
       return createView(data.buffer, type);
     };
   }
@@ -845,10 +860,12 @@ export class WebGpuBackend {
           type: 'timestamp',
           count: this.maxDispatchNumber * 2,
         });
-        this.queryResolveBuffer = this.device.createBuffer(
+        this.queryResolveBufferData = this.gpuDataManager.getBuffer({
+          size: this.maxDispatchNumber * 2 * 8,
           // eslint-disable-next-line no-bitwise
-          { size: this.maxDispatchNumber * 2 * 8, usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.QUERY_RESOLVE },
-        );
+          usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.QUERY_RESOLVE,
+        });
+        this.queryResolveBuffer = this.queryResolveBufferData.buffer;
       }
     }
   }

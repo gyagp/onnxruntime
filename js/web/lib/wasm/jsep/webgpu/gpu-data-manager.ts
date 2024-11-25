@@ -21,7 +21,7 @@ export interface GpuDataManager {
   /**
    * create new data on GPU.
    */
-  create(size: number, usage?: number): GpuData;
+  getBuffer(descriptor: GPUBufferDescriptor): GpuData;
   /**
    * get GPU data by ID.
    */
@@ -31,7 +31,7 @@ export interface GpuDataManager {
    *
    * @return size of the data released
    */
-  release(id: GpuDataId): number;
+  release(id: GpuDataId, pending?: boolean): number;
   /**
    * copy data from GPU to CPU.
    */
@@ -69,6 +69,8 @@ export interface GpuDataManager {
    * @param sessionId - specify the session ID.
    */
   onReleaseSession(sessionId: number): void;
+
+  downloadGpuData(gpuBuffer: GPUBuffer, originalSize: number, getTargetBuffer?: () => Uint8Array): Promise<Uint8Array>;
 }
 
 interface StorageCacheValue {
@@ -81,6 +83,7 @@ const bucketFreelist: Map<number, number> = new Map([
   [128, 200],
   [256, 200],
   [512, 200],
+  [1024, 200],
   [2048, 230],
   [4096, 200],
   [8192, 50],
@@ -131,87 +134,110 @@ const calcBucketBufferSize = (size: number) => {
 let guid = 1;
 const createNewGpuDataId = () => guid++;
 
-/**
- * exported standard download function. This function is used by the session to download the data from GPU, and also by
- * factory to create GPU tensors with the capacity of downloading data from GPU.
- *
- * @param backend - the WebGPU backend
- * @param gpuBuffer - the GPU buffer to download
- * @param originalSize - the original size of the data
- * @param getTargetBuffer - optional. If provided, the data will be copied to the target buffer. Otherwise, a new buffer
- * will be created and returned.
- */
-export const downloadGpuData = async (
-  backend: WebGpuBackend,
-  gpuBuffer: GPUBuffer,
-  originalSize: number,
-  getTargetBuffer?: () => Uint8Array,
-): Promise<Uint8Array> => {
-  const bufferSize = calcNormalizedBufferSize(originalSize);
-  const gpuReadBuffer = backend.device.createBuffer(
-    // eslint-disable-next-line no-bitwise
-    { size: bufferSize, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ },
-  );
-  try {
-    const commandEncoder = backend.getCommandEncoder();
-    backend.endComputePass();
-    commandEncoder.copyBufferToBuffer(
-      gpuBuffer /* source buffer */,
-      0 /* source offset */,
-      gpuReadBuffer /* destination buffer */,
-      0 /* destination offset */,
-      bufferSize /* size */,
-    );
-    backend.flush();
-
-    await gpuReadBuffer.mapAsync(GPUMapMode.READ);
-
-    const arrayBuffer = gpuReadBuffer.getMappedRange();
-    if (getTargetBuffer) {
-      // if we already have a CPU buffer to accept the data, no need to clone the ArrayBuffer.
-      const targetBuffer = getTargetBuffer();
-      targetBuffer.set(new Uint8Array(arrayBuffer, 0, originalSize));
-      return targetBuffer;
-    } else {
-      // the mapped ArrayBuffer will be released when the GPU buffer is destroyed. Need to clone the
-      // ArrayBuffer.
-      return new Uint8Array(arrayBuffer.slice(0, originalSize));
-    }
-  } finally {
-    gpuReadBuffer.destroy();
-  }
-};
-
 class GpuDataManagerImpl implements GpuDataManager {
   // GPU Data ID => GPU Data ( storage buffer )
   private storageCache: Map<GpuDataId, StorageCacheValue>;
 
-  // pending buffers for uploading ( data is unmapped )
-  private buffersForUploadingPending: GPUBuffer[];
-  // pending buffers for computing
-  private buffersPending: GPUBuffer[];
+  // {usage: {size: buffers}}
+  private freeBuffers: Map<number, Map<number, GPUBuffer[]>>;
 
-  // The reusable storage buffers for computing.
-  private freeBuffers: Map<number, GPUBuffer[]>;
-  // The reusable uniform buffers
-  private freeUniformBuffers: Map<number, GPUBuffer[]>;
+  private pendingBuffers: GPUBuffer[];
 
   // The pendingBuffers for capture graph.
   // a SessionID -> GPUBuffer[] mapping.
   private capturedPendingBuffers: Map<number, GPUBuffer[]>;
 
+  private totalBufferSize: number;
+  private usageBufferSize: Map<number, number>;
+  private usageName: Map<number, string>;
+  private debug: boolean;
+  private pendingUploadCount = 0;
+
   constructor(private backend: WebGpuBackend) {
     this.storageCache = new Map();
     this.freeBuffers = new Map();
-    this.freeUniformBuffers = new Map();
-    this.buffersForUploadingPending = [];
-    this.buffersPending = [];
     this.capturedPendingBuffers = new Map();
+    this.pendingBuffers = [];
 
     for (const [key] of bucketFreelist) {
       bucketArr.push(key);
-      this.freeBuffers.set(key, []);
-      this.freeUniformBuffers.set(key, []);
+    }
+    this.totalBufferSize = 0;
+    this.usageBufferSize = new Map();
+    this.usageName = new Map();
+    this.usageName.set(GPUBufferUsage.MAP_WRITE | GPUBufferUsage.COPY_SRC, 'MAP_WRITE|COPY_SRC');
+    this.usageName.set(
+      GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+      'STORAGE|COPY_SRC|COPY_DST',
+    );
+    this.usageName.set(GPUBufferUsage.COPY_DST | GPUBufferUsage.UNIFORM, 'COPY_DST|UNIFORM');
+    this.debug = this.backend.env.debug!!;
+  }
+
+  logBuffer(prefix: string): void {
+    let log = `${prefix} totalBufferSize=${this.totalBufferSize}`;
+    for (let usage of this.usageBufferSize.keys()) {
+      log += `, ${this.usageName.get(usage)}=${this.usageBufferSize.get(usage)!}`;
+    }
+    LOG_DEBUG('warning', () => log);
+  }
+
+  destroyBuffer(buffer: GPUBuffer): void {
+    this.totalBufferSize -= buffer.size;
+    this.usageBufferSize.set(buffer.usage, this.usageBufferSize.get(buffer.usage)! - buffer.size);
+    this.logBuffer(`destroyBuffer: usage=${this.usageName.get(buffer.usage)}, size=${buffer.size}`);
+    buffer.destroy();
+  }
+
+  /**
+   * exported standard download function. This function is used by the session to download the data from GPU, and also by
+   * factory to create GPU tensors with the capacity of downloading data from GPU.
+   *
+   * @param backend - the WebGPU backend
+   * @param gpuBuffer - the GPU buffer to download
+   * @param originalSize - the original size of the data
+   * @param getTargetBuffer - optional. If provided, the data will be copied to the target buffer. Otherwise, a new buffer
+   * will be created and returned.
+   */
+  async downloadGpuData(
+    gpuBuffer: GPUBuffer,
+    originalSize: number,
+    getTargetBuffer?: () => Uint8Array,
+  ): Promise<Uint8Array> {
+    const bufferSize = calcNormalizedBufferSize(originalSize);
+    const gpuStagingBufferData = this.getBuffer({
+      size: bufferSize,
+      // eslint-disable-next-line no-bitwise
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    const gpuStagingBuffer = gpuStagingBufferData.buffer;
+    try {
+      const commandEncoder = this.backend.getCommandEncoder();
+      this.backend.endComputePass();
+      commandEncoder.copyBufferToBuffer(
+        gpuBuffer /* source buffer */,
+        0 /* source offset */,
+        gpuStagingBuffer /* destination buffer */,
+        0 /* destination offset */,
+        bufferSize /* size */,
+      );
+      this.backend.flush();
+
+      await gpuStagingBuffer.mapAsync(GPUMapMode.READ);
+
+      const arrayBuffer = gpuStagingBuffer.getMappedRange();
+      if (getTargetBuffer) {
+        // if we already have a CPU buffer to accept the data, no need to clone the ArrayBuffer.
+        const targetBuffer = getTargetBuffer();
+        targetBuffer.set(new Uint8Array(arrayBuffer, 0, originalSize));
+        return targetBuffer;
+      } else {
+        // the mapped ArrayBuffer will be released when the GPU buffer is destroyed. Need to clone the
+        // ArrayBuffer.
+        return new Uint8Array(arrayBuffer.slice(0, originalSize));
+      }
+    } finally {
+      this.release(gpuStagingBufferData.id);
     }
   }
 
@@ -230,25 +256,33 @@ class GpuDataManagerImpl implements GpuDataManager {
       throw new Error(`inconsistent data size. gpu data size=${gpuDataCache.originalSize}, data size=${srcLength}`);
     }
 
-    // create gpu buffer
-    const gpuBufferForUploading = this.backend.device.createBuffer(
-      // eslint-disable-next-line no-bitwise
-      { mappedAtCreation: true, size, usage: GPUBufferUsage.MAP_WRITE | GPUBufferUsage.COPY_SRC },
-    );
+    // eslint-disable-next-line no-bitwise
+    const stagingBufferData = this.getBuffer({
+      size,
+      usage: GPUBufferUsage.MAP_WRITE | GPUBufferUsage.COPY_SRC,
+      mappedAtCreation: true,
+    });
+    const stagingBuffer = stagingBufferData.buffer;
 
     // copy (upload) data
-    const arrayBuffer = gpuBufferForUploading.getMappedRange();
+    const arrayBuffer = stagingBuffer.getMappedRange();
     new Uint8Array(arrayBuffer).set(new Uint8Array(srcArrayBuffer, srcOffset, srcLength));
-    gpuBufferForUploading.unmap();
+    stagingBuffer.unmap();
 
     // GPU copy
     const commandEncoder = this.backend.getCommandEncoder();
     this.backend.endComputePass();
-    commandEncoder.copyBufferToBuffer(gpuBufferForUploading, 0, gpuDataCache.gpuData.buffer, 0, size);
+    commandEncoder.copyBufferToBuffer(stagingBuffer, 0, gpuDataCache.gpuData.buffer, 0, size);
+
+    this.pendingUploadCount++;
+    if (this.pendingUploadCount > 0) {
+      this.backend.flush();
+      this.pendingUploadCount = 0;
+    }
+
+    this.release(stagingBufferData.id, true);
 
     LOG_DEBUG('verbose', () => `[WebGPU] GpuDataManager.upload(id=${id})`);
-
-    this.buffersForUploadingPending.push(gpuBufferForUploading);
   }
 
   memcpy(sourceId: GpuDataId, destinationId: GpuDataId): void {
@@ -317,39 +351,39 @@ class GpuDataManagerImpl implements GpuDataManager {
   }
 
   // eslint-disable-next-line no-bitwise
-  create(size: number, usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST): GpuData {
-    const bufferSize = calcBucketBufferSize(size);
+  getBuffer(descriptor: GPUBufferDescriptor): GpuData {
+    const size = descriptor.size;
+    const usage = descriptor.usage;
+    const bucketSize = calcBucketBufferSize(size);
 
     let gpuBuffer;
-    // Currently, only storage buffers are reused.
-    // eslint-disable-next-line no-bitwise
-    const isStorage = (usage & GPUBufferUsage.STORAGE) === GPUBufferUsage.STORAGE;
-    // eslint-disable-next-line no-bitwise
-    const isUniform = (usage & GPUBufferUsage.UNIFORM) === GPUBufferUsage.UNIFORM;
-    if (isStorage || isUniform) {
-      const freeBuffers = isStorage ? this.freeBuffers : this.freeUniformBuffers;
-      const buffers = freeBuffers.get(bufferSize);
-      if (!buffers) {
-        // no such bucket/freelist - create gpu buffer
-        gpuBuffer = this.backend.device.createBuffer({ size: bufferSize, usage });
-      } else {
-        if (buffers.length > 0) {
-          // in freelist, use it
-          gpuBuffer = buffers.pop() as GPUBuffer;
+
+    if (
+      !this.freeBuffers.has(usage) ||
+      !this.freeBuffers.get(usage)!.has(bucketSize) ||
+      this.freeBuffers.get(usage)!.get(bucketSize)!.length === 0
+    ) {
+      if (this.debug) {
+        this.totalBufferSize += bucketSize;
+        if (this.usageBufferSize.has(usage)) {
+          this.usageBufferSize.set(usage, this.usageBufferSize.get(usage)! + bucketSize);
         } else {
-          // bucket empty, create gpu buffer
-          gpuBuffer = this.backend.device.createBuffer({ size: bufferSize, usage });
+          this.usageBufferSize.set(usage, bucketSize);
         }
       }
+
+      gpuBuffer = this.backend.device.createBuffer(descriptor);
     } else {
-      // create gpu buffer
-      gpuBuffer = this.backend.device.createBuffer({ size: bufferSize, usage });
+      gpuBuffer = this.freeBuffers.get(usage)!.get(bucketSize)!.pop() as GPUBuffer;
     }
 
     const gpuData = { id: createNewGpuDataId(), type: GpuDataType.default, buffer: gpuBuffer };
     this.storageCache.set(gpuData.id, { gpuData, originalSize: size });
-
-    LOG_DEBUG('verbose', () => `[WebGPU] GpuDataManager.create(size=${size}) => id=${gpuData.id}`);
+    if (this.debug) {
+      this.logBuffer(
+        `[WebGPU] GpuDataManager.getBuffer, usage=${this.usageName.get(usage)}, size=${size}, bucketSize=${bucketSize}, id=${gpuData.id},`,
+      );
+    }
     return gpuData;
   }
 
@@ -357,7 +391,7 @@ class GpuDataManagerImpl implements GpuDataManager {
     return this.storageCache.get(id)?.gpuData;
   }
 
-  release(id: GpuDataId): number {
+  release(id: GpuDataId, pending = false): number {
     const cachedData = this.storageCache.get(id);
     if (!cachedData) {
       throw new Error('releasing data does not exist');
@@ -366,8 +400,25 @@ class GpuDataManagerImpl implements GpuDataManager {
     LOG_DEBUG('verbose', () => `[WebGPU] GpuDataManager.release(id=${id}), gpuDataId=${cachedData.gpuData.id}`);
 
     this.storageCache.delete(id);
-    this.buffersPending.push(cachedData.gpuData.buffer);
-    // cachedData.gpuData.buffer.destroy();
+
+    if (pending) {
+      this.pendingBuffers.push(cachedData.gpuData.buffer);
+    } else {
+      const buffer = cachedData.gpuData.buffer;
+      const size = buffer.size;
+      const usage = buffer.usage;
+
+      LOG_DEBUG('info', () => `[destroyBuffer] bufferId=${id}`);
+
+      if (!this.freeBuffers.has(usage)) {
+        this.freeBuffers.set(usage, new Map());
+      }
+      if (!this.freeBuffers.get(usage)!.has(size)) {
+        this.freeBuffers.get(usage)!.set(size, []);
+      }
+
+      this.freeBuffers.get(usage)!.get(size)!.push(buffer);
+    }
 
     return cachedData.originalSize;
   }
@@ -377,47 +428,31 @@ class GpuDataManagerImpl implements GpuDataManager {
     if (!cachedData) {
       throw new Error('data does not exist');
     }
-    await downloadGpuData(this.backend, cachedData.gpuData.buffer, cachedData.originalSize, getTargetBuffer);
+    await this.downloadGpuData(cachedData.gpuData.buffer, cachedData.originalSize, getTargetBuffer);
   }
 
   refreshPendingBuffers(): void {
-    for (const buffer of this.buffersForUploadingPending) {
-      // upload buffer is only useful in the session creation time. So we don't need to reuse them in session running.
-      buffer.destroy();
-    }
-    this.buffersForUploadingPending = [];
-
-    if (this.buffersPending.length === 0) {
-      return;
-    }
-
     if (this.backend.sessionStatus === 'default') {
-      for (const buffer of this.buffersPending) {
-        const maxInFreeList = bucketFreelist.get(buffer.size);
-
-        // eslint-disable-next-line no-bitwise
-        if ((buffer.usage & GPUBufferUsage.STORAGE) === GPUBufferUsage.STORAGE) {
-          // Put the pending buffer to freeBuffers list instead of really destroying it for buffer reusing.
-          const freelist = this.freeBuffers.get(buffer.size) || [];
-          if (maxInFreeList === undefined || freelist.length >= maxInFreeList) {
-            buffer.destroy();
-          } else {
-            freelist.push(buffer);
+      if (this.pendingBuffers.length > 0) {
+        this.pendingBuffers.forEach((buffer) => {
+          if (buffer.usage & GPUBufferUsage.MAP_READ || buffer.usage & GPUBufferUsage.MAP_WRITE) {
+            this.destroyBuffer(buffer);
           }
-          // eslint-disable-next-line no-bitwise
-        } else if ((buffer.usage & GPUBufferUsage.UNIFORM) === GPUBufferUsage.UNIFORM) {
-          // Put the pending buffer to freeUniformBuffers list instead of really destroying it for buffer reusing.
-          const freelist = this.freeUniformBuffers.get(buffer.size) || [];
-          if (maxInFreeList === undefined || freelist.length >= maxInFreeList) {
-            buffer.destroy();
-          } else {
-            freelist.push(buffer);
-          }
-        } else {
-          buffer.destroy();
-        }
+        });
+        this.pendingBuffers = [];
       }
-      this.buffersPending = [];
+      this.freeBuffers.forEach((usageInfo, usage) => {
+        if (!(usage & GPUBufferUsage.STORAGE)) {
+          return;
+        }
+        usageInfo.forEach((buffers, size) => {
+          const maxInFreeList = bucketFreelist.get(size);
+          const freelist = this.freeBuffers.get(usage)!.get(size) || [];
+          if (maxInFreeList === undefined || freelist.length >= maxInFreeList) {
+            this.destroyBuffer(buffers[buffers.length - 1]);
+          }
+        });
+      });
     } else {
       // Don't release intermediate tensors in non-default mode.
       // TODO: reuse the storage buffers in non-default mode.
@@ -426,37 +461,29 @@ class GpuDataManagerImpl implements GpuDataManager {
         capturedBuffers = [];
         this.capturedPendingBuffers.set(this.backend.currentSessionId!, capturedBuffers);
       }
-      for (const buffer of this.buffersPending) {
-        capturedBuffers.push(buffer);
-      }
-      this.buffersPending = [];
     }
   }
 
   dispose() {
-    this.freeBuffers.forEach((buffers) => {
-      buffers.forEach((buffer) => {
-        buffer.destroy();
-      });
-    });
-    this.freeUniformBuffers.forEach((buffers) => {
-      buffers.forEach((buffer) => {
-        buffer.destroy();
+    this.freeBuffers.forEach((usageInfo) => {
+      usageInfo.forEach((buffers, size) => {
+        for (let buffer of buffers) {
+          this.destroyBuffer(buffer);
+        }
+        usageInfo.set(size, []);
       });
     });
 
     this.storageCache.forEach((storage) => {
-      storage.gpuData.buffer.destroy();
+      this.destroyBuffer(storage.gpuData.buffer);
     });
+    this.storageCache = new Map();
 
     this.capturedPendingBuffers.forEach((buffers) => {
       buffers.forEach((buffer) => {
-        buffer.destroy();
+        this.destroyBuffer(buffer);
       });
     });
-    this.storageCache = new Map();
-    this.freeBuffers = new Map();
-    this.freeUniformBuffers = new Map();
     this.capturedPendingBuffers = new Map();
   }
 
@@ -465,7 +492,7 @@ class GpuDataManagerImpl implements GpuDataManager {
     const pendingBuffers = this.capturedPendingBuffers.get(sessionId);
     if (pendingBuffers) {
       pendingBuffers.forEach((buffer) => {
-        buffer.destroy();
+        this.destroyBuffer(buffer);
       });
       this.capturedPendingBuffers.delete(sessionId);
     }
