@@ -78,14 +78,14 @@ std::unordered_set<NodeIndex> GetCpuPreferredNodes(const onnxruntime::GraphViewe
     ORT_THROW_IF_ERROR(node->ForEachWithIndex(
         node->OutputDefs(),
         [&](const NodeArg& node_arg, size_t out_index) {
-          if (utils::IsOutputOnCpu(*node, kernel_info, out_index)) {
-            cpu_output_args.insert(&node_arg);
-            auto consumer_nodes = graph.GetConsumerNodes(node_arg.Name());
-            for (auto& consumer_node : consumer_nodes) {
-              candidates.push(consumer_node->Index());
-              LOGS_DEFAULT(INFO) << "Candidate for fallback CPU execution: " << consumer_node->Name();
-            }
+          // if (utils::IsOutputOnCpu(*node, kernel_info, out_index)) {
+          cpu_output_args.insert(&node_arg);
+          auto consumer_nodes = graph.GetConsumerNodes(node_arg.Name());
+          for (auto& consumer_node : consumer_nodes) {
+            candidates.push(consumer_node->Index());
+            LOGS_DEFAULT(INFO) << "Candidate for fallback CPU execution: " << consumer_node->Name();
           }
+          //}
           return Status::OK();
         }));
   }
