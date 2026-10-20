@@ -35,6 +35,8 @@ class Ep : public onnxruntime::ep::adapter::Ep {
   }
 
  private:
+  static OrtStatus* ORT_API_CALL CreateProfilerImpl(OrtEp* this_ptr, OrtEpProfilerImpl** profiler) noexcept;
+
   static const char* ORT_API_CALL GetNameImpl(const OrtEp* this_ptr) noexcept;
 
   static OrtStatus* ORT_API_CALL GetCapabilityImpl(OrtEp* this_ptr, const OrtGraph* graph,

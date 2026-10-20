@@ -1,0 +1,230 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
+#param tile_m
+#param has_bias
+#use .setByOffset
+#if tile_m > 0
+#if has_bias
+  write_output(batch, row + 0u, col + local_idx, output_element_t(results[0u] + acc_element_t(bias_value)));
+#else
+  write_output(batch, row + 0u, col + local_idx, output_element_t(results[0u]));
+#endif
+#endif
+#if tile_m > 1
+#if has_bias
+  write_output(batch, row + 1u, col + local_idx, output_element_t(results[1u] + acc_element_t(bias_value)));
+#else
+  write_output(batch, row + 1u, col + local_idx, output_element_t(results[1u]));
+#endif
+#endif
+#if tile_m > 2
+#if has_bias
+  write_output(batch, row + 2u, col + local_idx, output_element_t(results[2u] + acc_element_t(bias_value)));
+#else
+  write_output(batch, row + 2u, col + local_idx, output_element_t(results[2u]));
+#endif
+#endif
+#if tile_m > 3
+#if has_bias
+  write_output(batch, row + 3u, col + local_idx, output_element_t(results[3u] + acc_element_t(bias_value)));
+#else
+  write_output(batch, row + 3u, col + local_idx, output_element_t(results[3u]));
+#endif
+#endif
+#if tile_m > 4
+#if has_bias
+  write_output(batch, row + 4u, col + local_idx, output_element_t(results[4u] + acc_element_t(bias_value)));
+#else
+  write_output(batch, row + 4u, col + local_idx, output_element_t(results[4u]));
+#endif
+#endif
+#if tile_m > 5
+#if has_bias
+  write_output(batch, row + 5u, col + local_idx, output_element_t(results[5u] + acc_element_t(bias_value)));
+#else
+  write_output(batch, row + 5u, col + local_idx, output_element_t(results[5u]));
+#endif
+#endif
+#if tile_m > 6
+#if has_bias
+  write_output(batch, row + 6u, col + local_idx, output_element_t(results[6u] + acc_element_t(bias_value)));
+#else
+  write_output(batch, row + 6u, col + local_idx, output_element_t(results[6u]));
+#endif
+#endif
+#if tile_m > 7
+#if has_bias
+  write_output(batch, row + 7u, col + local_idx, output_element_t(results[7u] + acc_element_t(bias_value)));
+#else
+  write_output(batch, row + 7u, col + local_idx, output_element_t(results[7u]));
+#endif
+#endif
+#if tile_m > 8
+#if has_bias
+  write_output(batch, row + 8u, col + local_idx, output_element_t(results[8u] + acc_element_t(bias_value)));
+#else
+  write_output(batch, row + 8u, col + local_idx, output_element_t(results[8u]));
+#endif
+#endif
+#if tile_m > 9
+#if has_bias
+  write_output(batch, row + 9u, col + local_idx, output_element_t(results[9u] + acc_element_t(bias_value)));
+#else
+  write_output(batch, row + 9u, col + local_idx, output_element_t(results[9u]));
+#endif
+#endif
+#if tile_m > 10
+#if has_bias
+  write_output(batch, row + 10u, col + local_idx, output_element_t(results[10u] + acc_element_t(bias_value)));
+#else
+  write_output(batch, row + 10u, col + local_idx, output_element_t(results[10u]));
+#endif
+#endif
+#if tile_m > 11
+#if has_bias
+  write_output(batch, row + 11u, col + local_idx, output_element_t(results[11u] + acc_element_t(bias_value)));
+#else
+  write_output(batch, row + 11u, col + local_idx, output_element_t(results[11u]));
+#endif
+#endif
+#if tile_m > 12
+#if has_bias
+  write_output(batch, row + 12u, col + local_idx, output_element_t(results[12u] + acc_element_t(bias_value)));
+#else
+  write_output(batch, row + 12u, col + local_idx, output_element_t(results[12u]));
+#endif
+#endif
+#if tile_m > 13
+#if has_bias
+  write_output(batch, row + 13u, col + local_idx, output_element_t(results[13u] + acc_element_t(bias_value)));
+#else
+  write_output(batch, row + 13u, col + local_idx, output_element_t(results[13u]));
+#endif
+#endif
+#if tile_m > 14
+#if has_bias
+  write_output(batch, row + 14u, col + local_idx, output_element_t(results[14u] + acc_element_t(bias_value)));
+#else
+  write_output(batch, row + 14u, col + local_idx, output_element_t(results[14u]));
+#endif
+#endif
+#if tile_m > 15
+#if has_bias
+  write_output(batch, row + 15u, col + local_idx, output_element_t(results[15u] + acc_element_t(bias_value)));
+#else
+  write_output(batch, row + 15u, col + local_idx, output_element_t(results[15u]));
+#endif
+#endif
+#if tile_m > 16
+#if has_bias
+  write_output(batch, row + 16u, col + local_idx, output_element_t(results[16u] + acc_element_t(bias_value)));
+#else
+  write_output(batch, row + 16u, col + local_idx, output_element_t(results[16u]));
+#endif
+#endif
+#if tile_m > 17
+#if has_bias
+  write_output(batch, row + 17u, col + local_idx, output_element_t(results[17u] + acc_element_t(bias_value)));
+#else
+  write_output(batch, row + 17u, col + local_idx, output_element_t(results[17u]));
+#endif
+#endif
+#if tile_m > 18
+#if has_bias
+  write_output(batch, row + 18u, col + local_idx, output_element_t(results[18u] + acc_element_t(bias_value)));
+#else
+  write_output(batch, row + 18u, col + local_idx, output_element_t(results[18u]));
+#endif
+#endif
+#if tile_m > 19
+#if has_bias
+  write_output(batch, row + 19u, col + local_idx, output_element_t(results[19u] + acc_element_t(bias_value)));
+#else
+  write_output(batch, row + 19u, col + local_idx, output_element_t(results[19u]));
+#endif
+#endif
+#if tile_m > 20
+#if has_bias
+  write_output(batch, row + 20u, col + local_idx, output_element_t(results[20u] + acc_element_t(bias_value)));
+#else
+  write_output(batch, row + 20u, col + local_idx, output_element_t(results[20u]));
+#endif
+#endif
+#if tile_m > 21
+#if has_bias
+  write_output(batch, row + 21u, col + local_idx, output_element_t(results[21u] + acc_element_t(bias_value)));
+#else
+  write_output(batch, row + 21u, col + local_idx, output_element_t(results[21u]));
+#endif
+#endif
+#if tile_m > 22
+#if has_bias
+  write_output(batch, row + 22u, col + local_idx, output_element_t(results[22u] + acc_element_t(bias_value)));
+#else
+  write_output(batch, row + 22u, col + local_idx, output_element_t(results[22u]));
+#endif
+#endif
+#if tile_m > 23
+#if has_bias
+  write_output(batch, row + 23u, col + local_idx, output_element_t(results[23u] + acc_element_t(bias_value)));
+#else
+  write_output(batch, row + 23u, col + local_idx, output_element_t(results[23u]));
+#endif
+#endif
+#if tile_m > 24
+#if has_bias
+  write_output(batch, row + 24u, col + local_idx, output_element_t(results[24u] + acc_element_t(bias_value)));
+#else
+  write_output(batch, row + 24u, col + local_idx, output_element_t(results[24u]));
+#endif
+#endif
+#if tile_m > 25
+#if has_bias
+  write_output(batch, row + 25u, col + local_idx, output_element_t(results[25u] + acc_element_t(bias_value)));
+#else
+  write_output(batch, row + 25u, col + local_idx, output_element_t(results[25u]));
+#endif
+#endif
+#if tile_m > 26
+#if has_bias
+  write_output(batch, row + 26u, col + local_idx, output_element_t(results[26u] + acc_element_t(bias_value)));
+#else
+  write_output(batch, row + 26u, col + local_idx, output_element_t(results[26u]));
+#endif
+#endif
+#if tile_m > 27
+#if has_bias
+  write_output(batch, row + 27u, col + local_idx, output_element_t(results[27u] + acc_element_t(bias_value)));
+#else
+  write_output(batch, row + 27u, col + local_idx, output_element_t(results[27u]));
+#endif
+#endif
+#if tile_m > 28
+#if has_bias
+  write_output(batch, row + 28u, col + local_idx, output_element_t(results[28u] + acc_element_t(bias_value)));
+#else
+  write_output(batch, row + 28u, col + local_idx, output_element_t(results[28u]));
+#endif
+#endif
+#if tile_m > 29
+#if has_bias
+  write_output(batch, row + 29u, col + local_idx, output_element_t(results[29u] + acc_element_t(bias_value)));
+#else
+  write_output(batch, row + 29u, col + local_idx, output_element_t(results[29u]));
+#endif
+#endif
+#if tile_m > 30
+#if has_bias
+  write_output(batch, row + 30u, col + local_idx, output_element_t(results[30u] + acc_element_t(bias_value)));
+#else
+  write_output(batch, row + 30u, col + local_idx, output_element_t(results[30u]));
+#endif
+#endif
+#if tile_m > 31
+#if has_bias
+  write_output(batch, row + 31u, col + local_idx, output_element_t(results[31u] + acc_element_t(bias_value)));
+#else
+  write_output(batch, row + 31u, col + local_idx, output_element_t(results[31u]));
+#endif
+#endif

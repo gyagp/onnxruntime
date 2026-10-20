@@ -1,0 +1,228 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
+#param tile_m
+#if tile_m > 0
+      {
+        let a = a_data_tile[b_idx][0u];
+        results[0u] += dot(vec4<acc_element_t>(a[0]), vec4<acc_element_t>(b_dequantized[0])) +
+                          dot(vec4<acc_element_t>(a[1]), vec4<acc_element_t>(b_dequantized[1]));
+      }
+#endif
+#if tile_m > 1
+      {
+        let a = a_data_tile[b_idx][1u];
+        results[1u] += dot(vec4<acc_element_t>(a[0]), vec4<acc_element_t>(b_dequantized[0])) +
+                          dot(vec4<acc_element_t>(a[1]), vec4<acc_element_t>(b_dequantized[1]));
+      }
+#endif
+#if tile_m > 2
+      {
+        let a = a_data_tile[b_idx][2u];
+        results[2u] += dot(vec4<acc_element_t>(a[0]), vec4<acc_element_t>(b_dequantized[0])) +
+                          dot(vec4<acc_element_t>(a[1]), vec4<acc_element_t>(b_dequantized[1]));
+      }
+#endif
+#if tile_m > 3
+      {
+        let a = a_data_tile[b_idx][3u];
+        results[3u] += dot(vec4<acc_element_t>(a[0]), vec4<acc_element_t>(b_dequantized[0])) +
+                          dot(vec4<acc_element_t>(a[1]), vec4<acc_element_t>(b_dequantized[1]));
+      }
+#endif
+#if tile_m > 4
+      {
+        let a = a_data_tile[b_idx][4u];
+        results[4u] += dot(vec4<acc_element_t>(a[0]), vec4<acc_element_t>(b_dequantized[0])) +
+                          dot(vec4<acc_element_t>(a[1]), vec4<acc_element_t>(b_dequantized[1]));
+      }
+#endif
+#if tile_m > 5
+      {
+        let a = a_data_tile[b_idx][5u];
+        results[5u] += dot(vec4<acc_element_t>(a[0]), vec4<acc_element_t>(b_dequantized[0])) +
+                          dot(vec4<acc_element_t>(a[1]), vec4<acc_element_t>(b_dequantized[1]));
+      }
+#endif
+#if tile_m > 6
+      {
+        let a = a_data_tile[b_idx][6u];
+        results[6u] += dot(vec4<acc_element_t>(a[0]), vec4<acc_element_t>(b_dequantized[0])) +
+                          dot(vec4<acc_element_t>(a[1]), vec4<acc_element_t>(b_dequantized[1]));
+      }
+#endif
+#if tile_m > 7
+      {
+        let a = a_data_tile[b_idx][7u];
+        results[7u] += dot(vec4<acc_element_t>(a[0]), vec4<acc_element_t>(b_dequantized[0])) +
+                          dot(vec4<acc_element_t>(a[1]), vec4<acc_element_t>(b_dequantized[1]));
+      }
+#endif
+#if tile_m > 8
+      {
+        let a = a_data_tile[b_idx][8u];
+        results[8u] += dot(vec4<acc_element_t>(a[0]), vec4<acc_element_t>(b_dequantized[0])) +
+                          dot(vec4<acc_element_t>(a[1]), vec4<acc_element_t>(b_dequantized[1]));
+      }
+#endif
+#if tile_m > 9
+      {
+        let a = a_data_tile[b_idx][9u];
+        results[9u] += dot(vec4<acc_element_t>(a[0]), vec4<acc_element_t>(b_dequantized[0])) +
+                          dot(vec4<acc_element_t>(a[1]), vec4<acc_element_t>(b_dequantized[1]));
+      }
+#endif
+#if tile_m > 10
+      {
+        let a = a_data_tile[b_idx][10u];
+        results[10u] += dot(vec4<acc_element_t>(a[0]), vec4<acc_element_t>(b_dequantized[0])) +
+                          dot(vec4<acc_element_t>(a[1]), vec4<acc_element_t>(b_dequantized[1]));
+      }
+#endif
+#if tile_m > 11
+      {
+        let a = a_data_tile[b_idx][11u];
+        results[11u] += dot(vec4<acc_element_t>(a[0]), vec4<acc_element_t>(b_dequantized[0])) +
+                          dot(vec4<acc_element_t>(a[1]), vec4<acc_element_t>(b_dequantized[1]));
+      }
+#endif
+#if tile_m > 12
+      {
+        let a = a_data_tile[b_idx][12u];
+        results[12u] += dot(vec4<acc_element_t>(a[0]), vec4<acc_element_t>(b_dequantized[0])) +
+                          dot(vec4<acc_element_t>(a[1]), vec4<acc_element_t>(b_dequantized[1]));
+      }
+#endif
+#if tile_m > 13
+      {
+        let a = a_data_tile[b_idx][13u];
+        results[13u] += dot(vec4<acc_element_t>(a[0]), vec4<acc_element_t>(b_dequantized[0])) +
+                          dot(vec4<acc_element_t>(a[1]), vec4<acc_element_t>(b_dequantized[1]));
+      }
+#endif
+#if tile_m > 14
+      {
+        let a = a_data_tile[b_idx][14u];
+        results[14u] += dot(vec4<acc_element_t>(a[0]), vec4<acc_element_t>(b_dequantized[0])) +
+                          dot(vec4<acc_element_t>(a[1]), vec4<acc_element_t>(b_dequantized[1]));
+      }
+#endif
+#if tile_m > 15
+      {
+        let a = a_data_tile[b_idx][15u];
+        results[15u] += dot(vec4<acc_element_t>(a[0]), vec4<acc_element_t>(b_dequantized[0])) +
+                          dot(vec4<acc_element_t>(a[1]), vec4<acc_element_t>(b_dequantized[1]));
+      }
+#endif
+#if tile_m > 16
+      {
+        let a = a_data_tile[b_idx][16u];
+        results[16u] += dot(vec4<acc_element_t>(a[0]), vec4<acc_element_t>(b_dequantized[0])) +
+                          dot(vec4<acc_element_t>(a[1]), vec4<acc_element_t>(b_dequantized[1]));
+      }
+#endif
+#if tile_m > 17
+      {
+        let a = a_data_tile[b_idx][17u];
+        results[17u] += dot(vec4<acc_element_t>(a[0]), vec4<acc_element_t>(b_dequantized[0])) +
+                          dot(vec4<acc_element_t>(a[1]), vec4<acc_element_t>(b_dequantized[1]));
+      }
+#endif
+#if tile_m > 18
+      {
+        let a = a_data_tile[b_idx][18u];
+        results[18u] += dot(vec4<acc_element_t>(a[0]), vec4<acc_element_t>(b_dequantized[0])) +
+                          dot(vec4<acc_element_t>(a[1]), vec4<acc_element_t>(b_dequantized[1]));
+      }
+#endif
+#if tile_m > 19
+      {
+        let a = a_data_tile[b_idx][19u];
+        results[19u] += dot(vec4<acc_element_t>(a[0]), vec4<acc_element_t>(b_dequantized[0])) +
+                          dot(vec4<acc_element_t>(a[1]), vec4<acc_element_t>(b_dequantized[1]));
+      }
+#endif
+#if tile_m > 20
+      {
+        let a = a_data_tile[b_idx][20u];
+        results[20u] += dot(vec4<acc_element_t>(a[0]), vec4<acc_element_t>(b_dequantized[0])) +
+                          dot(vec4<acc_element_t>(a[1]), vec4<acc_element_t>(b_dequantized[1]));
+      }
+#endif
+#if tile_m > 21
+      {
+        let a = a_data_tile[b_idx][21u];
+        results[21u] += dot(vec4<acc_element_t>(a[0]), vec4<acc_element_t>(b_dequantized[0])) +
+                          dot(vec4<acc_element_t>(a[1]), vec4<acc_element_t>(b_dequantized[1]));
+      }
+#endif
+#if tile_m > 22
+      {
+        let a = a_data_tile[b_idx][22u];
+        results[22u] += dot(vec4<acc_element_t>(a[0]), vec4<acc_element_t>(b_dequantized[0])) +
+                          dot(vec4<acc_element_t>(a[1]), vec4<acc_element_t>(b_dequantized[1]));
+      }
+#endif
+#if tile_m > 23
+      {
+        let a = a_data_tile[b_idx][23u];
+        results[23u] += dot(vec4<acc_element_t>(a[0]), vec4<acc_element_t>(b_dequantized[0])) +
+                          dot(vec4<acc_element_t>(a[1]), vec4<acc_element_t>(b_dequantized[1]));
+      }
+#endif
+#if tile_m > 24
+      {
+        let a = a_data_tile[b_idx][24u];
+        results[24u] += dot(vec4<acc_element_t>(a[0]), vec4<acc_element_t>(b_dequantized[0])) +
+                          dot(vec4<acc_element_t>(a[1]), vec4<acc_element_t>(b_dequantized[1]));
+      }
+#endif
+#if tile_m > 25
+      {
+        let a = a_data_tile[b_idx][25u];
+        results[25u] += dot(vec4<acc_element_t>(a[0]), vec4<acc_element_t>(b_dequantized[0])) +
+                          dot(vec4<acc_element_t>(a[1]), vec4<acc_element_t>(b_dequantized[1]));
+      }
+#endif
+#if tile_m > 26
+      {
+        let a = a_data_tile[b_idx][26u];
+        results[26u] += dot(vec4<acc_element_t>(a[0]), vec4<acc_element_t>(b_dequantized[0])) +
+                          dot(vec4<acc_element_t>(a[1]), vec4<acc_element_t>(b_dequantized[1]));
+      }
+#endif
+#if tile_m > 27
+      {
+        let a = a_data_tile[b_idx][27u];
+        results[27u] += dot(vec4<acc_element_t>(a[0]), vec4<acc_element_t>(b_dequantized[0])) +
+                          dot(vec4<acc_element_t>(a[1]), vec4<acc_element_t>(b_dequantized[1]));
+      }
+#endif
+#if tile_m > 28
+      {
+        let a = a_data_tile[b_idx][28u];
+        results[28u] += dot(vec4<acc_element_t>(a[0]), vec4<acc_element_t>(b_dequantized[0])) +
+                          dot(vec4<acc_element_t>(a[1]), vec4<acc_element_t>(b_dequantized[1]));
+      }
+#endif
+#if tile_m > 29
+      {
+        let a = a_data_tile[b_idx][29u];
+        results[29u] += dot(vec4<acc_element_t>(a[0]), vec4<acc_element_t>(b_dequantized[0])) +
+                          dot(vec4<acc_element_t>(a[1]), vec4<acc_element_t>(b_dequantized[1]));
+      }
+#endif
+#if tile_m > 30
+      {
+        let a = a_data_tile[b_idx][30u];
+        results[30u] += dot(vec4<acc_element_t>(a[0]), vec4<acc_element_t>(b_dequantized[0])) +
+                          dot(vec4<acc_element_t>(a[1]), vec4<acc_element_t>(b_dequantized[1]));
+      }
+#endif
+#if tile_m > 31
+      {
+        let a = a_data_tile[b_idx][31u];
+        results[31u] += dot(vec4<acc_element_t>(a[0]), vec4<acc_element_t>(b_dequantized[0])) +
+                          dot(vec4<acc_element_t>(a[1]), vec4<acc_element_t>(b_dequantized[1]));
+      }
+#endif

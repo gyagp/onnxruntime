@@ -120,6 +120,7 @@ class WebGpuExecutionProvider : public IExecutionProvider {
   int GetDeviceId() const override { return context_id_; }
 
   std::unique_ptr<profiling::EpProfiler> GetProfiler() override;
+  webgpu::WebGpuProfiler* SessionProfiler() const { return session_profiler_; }
 
   bool IsGraphCaptureEnabled() const override;
   bool IsGraphCaptured(int graph_annotation_id) const override;

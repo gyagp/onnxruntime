@@ -12,6 +12,7 @@
 #include "core/session/onnxruntime_run_options_config_keys.h"
 #include "core/session/plugin_ep/ep_kernel_registration.h"
 #include "core/providers/webgpu/webgpu_execution_provider.h"
+#include "core/providers/webgpu/webgpu_profiler.h"
 
 #include "ep/get_capability_utils.h"
 
@@ -21,6 +22,64 @@ namespace ep {
 
 using onnxruntime::ep::Api;
 
+namespace {
+// The adapter owns the profiler for the EP lifetime. WebGPU serializes runs;
+// using that same instance also enables GPU collection in OnRunStart/OnRunEnd.
+class PluginProfiler final : public OrtEpProfilerImpl {
+ public:
+  explicit PluginProfiler(WebGpuProfiler& impl) : OrtEpProfilerImpl{}, impl_(impl) {
+    ort_version_supported = ORT_API_VERSION;
+    Release = [](OrtEpProfilerImpl* self) noexcept { delete static_cast<PluginProfiler*>(self); };
+    StartProfiling = StartImpl;
+    EndProfiling = EndImpl;
+  }
+
+ private:
+  static OrtStatus* ORT_API_CALL StartImpl(OrtEpProfilerImpl* self, int64_t offset_ns) noexcept {
+    EXCEPTION_TO_RETURNED_STATUS_BEGIN
+    auto& profiler = *static_cast<PluginProfiler*>(self);
+    ORT_ENFORCE(!profiler.impl_.Enabled(), "Concurrent WebGPU profiling is unsupported");
+    profiler.start_ = std::chrono::high_resolution_clock::now() -
+                      std::chrono::duration_cast<TimePoint::duration>(std::chrono::nanoseconds(offset_ns));
+    ORT_THROW_IF_ERROR(profiler.impl_.StartProfiling(profiler.start_));
+    profiler.active_ = true;
+    return nullptr;
+    EXCEPTION_TO_RETURNED_STATUS_END
+  }
+
+  static OrtStatus* ORT_API_CALL EndImpl(OrtEpProfilerImpl* self, OrtProfilingEventsContainer* container) noexcept {
+    EXCEPTION_TO_RETURNED_STATUS_BEGIN
+    auto& profiler = *static_cast<PluginProfiler*>(self);
+    if (!profiler.active_) {
+      return nullptr;
+    }
+    profiling::Events events;
+    profiler.impl_.EndProfiling(profiler.start_, events);
+    profiler.active_ = false;
+    for (const auto& event : events) {
+      InlinedVector<const char*> keys, values;
+      for (const auto& [key, value] : event.args) {
+        keys.push_back(key.c_str());
+        values.push_back(value.c_str());
+      }
+      OrtProfilingEvent* converted = nullptr;
+      Ort::ThrowOnError(Api().ep.CreateProfilingEvent(
+          static_cast<OrtProfilingEventCategory>(event.cat), event.pid, event.tid,
+          event.name.c_str(), event.ts, event.dur, keys.data(), values.data(), keys.size(), &converted));
+      auto release = gsl::finally([&] { Api().ep.ReleaseProfilingEvent(converted); });
+      const OrtProfilingEvent* view = converted;
+      Ort::ThrowOnError(Api().ep.ProfilingEventsContainer_AddEvents(container, &view, 1));
+    }
+    return nullptr;
+    EXCEPTION_TO_RETURNED_STATUS_END
+  }
+
+  WebGpuProfiler& impl_;
+  TimePoint start_{};
+  bool active_{false};
+};
+}  // namespace
+
 // Constructor
 Ep::Ep(std::unique_ptr<IExecutionProvider> impl, Factory& factory, const OrtLogger& logger, const Config& config)
     : onnxruntime::ep::adapter::Ep{std::move(impl), config.cpu_allocator, config.device_allocator},
@@ -29,6 +88,7 @@ Ep::Ep(std::unique_ptr<IExecutionProvider> impl, Factory& factory, const OrtLogg
       config_{config} {
   // Initialize the execution provider's function table
   GetName = GetNameImpl;
+  CreateProfiler = CreateProfilerImpl;
   GetCapability = GetCapabilityImpl;
   GetKernelRegistry = GetKernelRegistryImpl;
   Compile = nullptr;  // Per-kernel EP does not use Compile
@@ -48,6 +108,14 @@ Ep::Ep(std::unique_ptr<IExecutionProvider> impl, Factory& factory, const OrtLogg
   ReplayGraph = ReplayGraphImpl;
   ReleaseCapturedGraph = ReleaseCapturedGraphImpl;
   GetGraphCaptureNodeAssignmentPolicy = GetGraphCaptureNodeAssignmentPolicyImpl;
+}
+
+OrtStatus* ORT_API_CALL Ep::CreateProfilerImpl(OrtEp* this_ptr, OrtEpProfilerImpl** profiler) noexcept {
+  EXCEPTION_TO_RETURNED_STATUS_BEGIN
+  auto* impl = static_cast<WebGpuExecutionProvider*>(static_cast<Ep*>(this_ptr)->EpImpl());
+  *profiler = new PluginProfiler(*impl->SessionProfiler());
+  return nullptr;
+  EXCEPTION_TO_RETURNED_STATUS_END
 }
 
 // OrtEp interface implementations

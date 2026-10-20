@@ -1,7 +1,9 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
+#param unroll_direct
 #param has_zero_points
+#param zero_points_float
 #param has_bias
 #param has_weight_idx
 #param has_weight_idx_indirect
@@ -55,6 +57,9 @@ fn load_zero(row : u32, col : u32, r_dim : u32, c_dim : u32) -> output_element_t
     let offset = row * c_dim + col;
   #endif
 
+#if zero_points_float
+    return output_element_t(zero_points[offset]);
+#else
     // u32 holds elements_in_uint32 packed nbits.
     let array_index = offset / elements_in_uint32;
     let component_index = offset % elements_in_uint32;
@@ -70,6 +75,7 @@ fn load_zero(row : u32, col : u32, r_dim : u32, c_dim : u32) -> output_element_t
 #endif
 
     return output_element_t(masked_value);
+#endif
   }
 
   return output_element_t();
@@ -267,11 +273,16 @@ $MAIN {
       }
 #else
       // No guaranteed subgroup support wide enough for shuffles: read each row directly.
+#if unroll_direct
+// Constant indices let the D3D12 compiler keep row accumulators in registers.
+#include "quantization/matmul_nbits_wide_tile_reduce_unrolled.wgsl.template"
+#else
       for (var m_idx = 0u; m_idx < kTileM; m_idx++) {
         let a = a_data_tile[b_idx][m_idx];
         results[m_idx] += dot(vec4<acc_element_t>(a[0]), vec4<acc_element_t>(b_dequantized[0])) +
                           dot(vec4<acc_element_t>(a[1]), vec4<acc_element_t>(b_dequantized[1]));
       }
+#endif
 #endif
     }
     workgroupBarrier();
@@ -291,6 +302,9 @@ $MAIN {
     let bias_value = bias[col + local_idx];
   #endif
   #endif
+#if unroll_direct
+#include "quantization/matmul_nbits_wide_tile_store_unrolled.wgsl.template"
+#else
   for (var m_idx = 0u; m_idx < kTileM; m_idx++) {
   #if has_bias
     write_output(batch, row + m_idx, col + local_idx, output_element_t(results[m_idx] + acc_element_t(bias_value)));
@@ -298,4 +312,5 @@ $MAIN {
     write_output(batch, row + m_idx, col + local_idx, output_element_t(results[m_idx]));
   #endif
   }
+#endif
 }  // MAIN

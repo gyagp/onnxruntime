@@ -26,7 +26,9 @@ ONNX_OPERATOR_KERNEL_EX(
     (*KernelDefBuilder::Create())
         .TypeConstraint("T1", WebGpuSupportedFloatTypes())
         .TypeConstraint("T2", DataTypeImpl::GetTensorType<uint8_t>())
-        .TypeConstraint("T3", DataTypeImpl::GetTensorType<uint8_t>())
+        .TypeConstraint("T3", std::vector<MLDataType>{DataTypeImpl::GetTensorType<uint8_t>(),
+                                                      DataTypeImpl::GetTensorType<MLFloat16>(),
+                                                      DataTypeImpl::GetTensorType<float>()})
         .TypeConstraint("T4", DataTypeImpl::GetTensorType<int32_t>()),
     MatMulNBits);
 
@@ -48,6 +50,8 @@ Status MatMulNBitsWideTileProgram::GenerateShaderCode(ShaderHelper& shader) cons
   const uint32_t workgroup_size = WorkgroupSizeX() * WorkgroupSizeY() * WorkgroupSizeZ();
   ORT_ENFORCE(tile_n_ == workgroup_size, "tile_n must be workgroup_size.");
   ORT_ENFORCE(tile_m_ % (workgroup_size / 8) == 0, "tile_m must be a multiple of workgroup_size / 8.");
+  ORT_ENFORCE(!unroll_direct_ || (tile_m_ <= 32 && subgroup_min_size_ == 0),
+              "Unrolled direct reduction requires at most 32 rows and no subgroup shuffle.");
   ORT_ENFORCE(nbits_ == 4 || nbits_ == 8, "Only 4/8 bits are supported for webgpu matmulnbits.");
 
   return WGSL_TEMPLATE_APPLY(shader, "quantization/matmul_nbits_wide_tile.wgsl.template",
@@ -60,6 +64,9 @@ Status MatMulNBitsWideTileProgram::GenerateShaderCode(ShaderHelper& shader) cons
                              WGSL_TEMPLATE_PARAMETER(subgroup_min_size, subgroup_min_size_),
                              WGSL_TEMPLATE_PARAMETER(tile_m, tile_m_),
                              WGSL_TEMPLATE_PARAMETER(tile_n, tile_n_),
+                             WGSL_TEMPLATE_PARAMETER(unroll_direct, unroll_direct_),
+                             WGSL_TEMPLATE_PARAMETER(zero_points_float,
+                                                     has_zero_points_ && HasFloatZeroPoints(Inputs()[3].tensor)),
                              WGSL_TEMPLATE_VARIABLE(a, a),
                              WGSL_TEMPLATE_VARIABLE(b, b),
                              WGSL_TEMPLATE_VARIABLE(output, output),
@@ -108,6 +115,8 @@ Status MatMulNBitsProgram::GenerateShaderCode(ShaderHelper& shader) const {
                              WGSL_TEMPLATE_PARAMETER(tile_size, tile_size_),
                              WGSL_TEMPLATE_PARAMETER(tile_size_k, tile_size_k),
                              WGSL_TEMPLATE_PARAMETER(tile_size_k_vec, tile_size_k_vec),
+                             WGSL_TEMPLATE_PARAMETER(zero_points_float,
+                                                     has_zero_points_ && HasFloatZeroPoints(Inputs()[3].tensor)),
                              WGSL_TEMPLATE_VARIABLE(a, a),
                              WGSL_TEMPLATE_VARIABLE(b, b),
                              WGSL_TEMPLATE_VARIABLE(output, output),
@@ -126,7 +135,15 @@ Status MatMulNBits::ComputeInternal(onnxruntime::webgpu::ComputeContext& context
 
   const bool has_zero_points = zero_points != nullptr;
   if (has_zero_points) {
-    ORT_ENFORCE(zero_points->DataType() == DataTypeImpl::GetType<uint8_t>(), "Currently, only uint8 is supported for zero points, but got ", zero_points->DataType());
+    ORT_ENFORCE(zero_points->IsDataType<uint8_t>() || zero_points->DataType() == a->DataType(),
+                "Unpacked zero points must have the same type as A.");
+  }
+
+  if (HasFloatZeroPoints(zero_points)) {
+    const int64_t blocks = K_ / block_size_ + static_cast<int64_t>(K_ % block_size_ != 0);
+    ORT_ENFORCE(zero_points->Shape().NumDimensions() == 2 &&
+                    zero_points->Shape()[0] == N_ && zero_points->Shape()[1] == blocks,
+                "Unpacked zero points must have shape [N, ceil(K / block_size)].");
   }
 
   MatMulComputeHelper helper;
@@ -196,7 +213,8 @@ Status ApplyMatMulNBits(const Tensor* a, const Tensor* b, const Tensor* scales, 
   const bool has_weight_idx = weight_index > 0 || has_weight_idx_indirect;
   const bool has_zero_points = zero_points != nullptr;
   if (has_zero_points) {
-    ORT_ENFORCE(zero_points->DataType() == DataTypeImpl::GetType<uint8_t>(), "Currently, only uint8 is supported for zero points, but got ", zero_points->DataType());
+    ORT_ENFORCE(zero_points->IsDataType<uint8_t>() || zero_points->DataType() == a->DataType(),
+                "Unpacked zero points must have the same type as A.");
   }
 
   const uint32_t batch_count = onnxruntime::narrow<uint32_t>(helper.OutputOffsets().size());
@@ -221,7 +239,7 @@ Status ApplyMatMulNBits(const Tensor* a, const Tensor* b, const Tensor* scales, 
   // Since each column's zero points are byte-aligned in the packed buffer, we must round
   // n_blocks_per_col up to the next multiple of (8/nbits) — the number of zero point
   // values per byte — so that the linear stride correctly skips byte-boundary padding.
-  const uint32_t zp_elements_per_byte = 8 / static_cast<uint32_t>(nbits);
+  const uint32_t zp_elements_per_byte = HasFloatZeroPoints(zero_points) ? 1u : 8u / static_cast<uint32_t>(nbits);
   uint32_t zero_blocks_per_col = (n_blocks_per_col + zp_elements_per_byte - 1) / zp_elements_per_byte * zp_elements_per_byte;
 
   // apple|intel - Experimental dawn support for subgroup matrix matmul.
@@ -245,8 +263,8 @@ Status ApplyMatMulNBits(const Tensor* a, const Tensor* b, const Tensor* scales, 
 
   // On FP32 only GPUs and Qualcomm GPUs, integer math is faster than FP32 therefore always use DP4A independent of length of M.
   // DP4A Q2 path now supports custom zero points via a 1024-entry LUT (4 zero-point sections × 256 byte values).
-  if (CanApplyDP4AMatrixMatMulNBits(context, accuracy_level, block_size, N, K, components_a,
-                                    M, has_weight_idx_indirect, y)) {
+  if (!HasFloatZeroPoints(zero_points) && CanApplyDP4AMatrixMatMulNBits(context, accuracy_level, block_size, N, K, components_a,
+                                                                        M, has_weight_idx_indirect, y)) {
     return ApplyDP4AMatrixMatMulNBits(a, b, scales, zero_points, bias, batch_count, M, dispatch_M, N, K, block_size, zero_blocks_per_col, kMinMForTileOptimization, static_cast<uint32_t>(nbits), context, y, weight_index, weight_index_indirect);
   }
 
@@ -283,7 +301,10 @@ Status ApplyMatMulNBits(const Tensor* a, const Tensor* b, const Tensor* scales, 
                                            ? context.AdapterInfo().subgroupMinSize
                                            : 0u;
 
-    MatMulNBitsWideTileProgram program{has_zero_points, has_bias, has_weight_idx, has_weight_idx_indirect, tile_m, tile_n, static_cast<uint32_t>(nbits), subgroup_min_size, acc_f32};
+    const bool unroll_direct = is_nvidia && context.AdapterInfo().backendType == wgpu::BackendType::D3D12;
+    MatMulNBitsWideTileProgram program{has_zero_points, has_bias, has_weight_idx, has_weight_idx_indirect,
+                                     tile_m, tile_n, static_cast<uint32_t>(nbits), subgroup_min_size,
+                                     acc_f32, unroll_direct};
     program.SetWorkgroupSize(workgroup_size);
     program.SetDispatchGroupSize(num_N_tile, num_M_tile, batch_count);
 
@@ -300,10 +321,7 @@ Status ApplyMatMulNBits(const Tensor* a, const Tensor* b, const Tensor* scales, 
                       onnxruntime::narrow<int>(components_b_with_u32)});
     program.AddInput({scales, ProgramTensorMetadataDependency::TypeAndRank});
     if (has_zero_points) {
-      program.AddInput({zero_points,
-                        ProgramTensorMetadataDependency::TypeAndRank,
-                        {CeilDiv(zero_points->Shape().Size(), static_cast<int64_t>(4))},
-                        4});
+      program.AddInput(MakeMatMulZeroPointInput(zero_points));
     }
     if (has_bias) {
       program.AddInput({bias, ProgramTensorMetadataDependency::None});
@@ -324,7 +342,8 @@ Status ApplyMatMulNBits(const Tensor* a, const Tensor* b, const Tensor* scales, 
                                  {num_N_tile},
                                  {num_M_tile},
                                  {weight_index}});
-    program.CacheHint(nbits, has_zero_points, has_bias, has_weight_idx, has_weight_idx_indirect, subgroup_min_size, acc_f32);
+    program.CacheHint(nbits, has_zero_points, has_bias, has_weight_idx, has_weight_idx_indirect,
+                      subgroup_min_size, acc_f32, unroll_direct);
 
     return context.RunProgram(program);
   }
@@ -362,7 +381,7 @@ Status ApplyMatMulNBits(const Tensor* a, const Tensor* b, const Tensor* scales, 
                             {dispatch_M}})
       .CacheHint(nbits, has_zero_points, single_scale_weights, has_bias, has_weight_idx, has_weight_idx_indirect, tile_size_k_vec, broadcast_a, acc_f32);
   if (has_zero_points) {
-    program.AddInput({zero_points, ProgramTensorMetadataDependency::None, {(zero_points->Shape().Size() + 3) / 4}, 4});
+    program.AddInput(MakeMatMulZeroPointInput(zero_points));
   }
   if (has_bias) {
     program.AddInput({bias, ProgramTensorMetadataDependency::None});

@@ -3,6 +3,7 @@
 
 #param n_bits
 #param has_zero_points
+#param zero_points_float
 #param has_bias
 #param output_type_i32
 
@@ -30,6 +31,9 @@
     if (row < r_dim && col < c_dim) {
       let offset = matrix_idx * r_dim * c_dim + row * c_dim + col;
 
+#if zero_points_float
+      return output_type(zero_points[offset]);
+#else
       // u32 holds elements_in_uint32 packed nbits.
       let array_index = offset / elements_in_uint32;
       let component_index = offset % elements_in_uint32;
@@ -40,6 +44,7 @@
 
       let masked_value = (packed_value >> shift_amount) & bit_mask;
       return output_type(masked_value);
+#endif
     }
     return output_type(0);
   }

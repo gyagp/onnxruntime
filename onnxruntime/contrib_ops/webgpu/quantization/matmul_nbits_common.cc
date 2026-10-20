@@ -6,12 +6,27 @@
 #include <sstream>
 
 #include "core/common/common.h"
+#include "core/framework/tensor.h"
+#include "core/providers/webgpu/program.h"
 #include "core/providers/webgpu/webgpu_context.h"
 #include "core/providers/webgpu/webgpu_utils.h"
 
 namespace onnxruntime {
 namespace contrib {
 namespace webgpu {
+
+bool HasFloatZeroPoints(const Tensor* zero_points) {
+  return zero_points != nullptr && !zero_points->IsDataType<uint8_t>();
+}
+
+onnxruntime::webgpu::ProgramInput MakeMatMulZeroPointInput(const Tensor* zero_points) {
+  using onnxruntime::webgpu::ProgramInput;
+  using onnxruntime::webgpu::ProgramTensorMetadataDependency;
+  if (HasFloatZeroPoints(zero_points)) {
+    return {zero_points, ProgramTensorMetadataDependency::Type, ProgramInput::Flatten, 1};
+  }
+  return {zero_points, ProgramTensorMetadataDependency::Type, {(zero_points->Shape().Size() + 3) / 4}, 4};
+}
 
 std::string GenerateZeroPointReadingCode(uint32_t nbits, bool has_zero_points,
                                          const std::string& output_type) {

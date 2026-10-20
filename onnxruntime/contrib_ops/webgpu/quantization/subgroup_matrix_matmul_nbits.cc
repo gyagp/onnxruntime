@@ -36,9 +36,8 @@ using onnxruntime::webgpu::SubgroupMatrixConfig;
 // d32, d33,
 class PrepackProgram final : public Program<PrepackProgram> {
  public:
-  PrepackProgram(uint32_t m, uint32_t k) : Program{"SubgroupMatrixMatMulLayout"},
-                                           m_(m),
-                                           k_(k) {}
+  PrepackProgram(uint32_t m, uint32_t k, bool scalar_copy)
+      : Program{"SubgroupMatrixMatMulLayout"}, m_(m), k_(k), scalar_copy_(scalar_copy) {}
   Status GenerateShaderCode(ShaderHelper& sh) const override;
   WEBGPU_PROGRAM_DEFINE_UNIFORM_VARIABLES(
       {"M", ProgramUniformVariableDataType::Uint32},
@@ -47,12 +46,14 @@ class PrepackProgram final : public Program<PrepackProgram> {
  private:
   uint32_t m_;
   uint32_t k_;
+  bool scalar_copy_;
 };
 
 Status PrepackProgram::GenerateShaderCode(ShaderHelper& shader) const {
   shader.AddInput("input_a", ShaderUsage::UseUniform);
   shader.AddOutput("output_a", ShaderUsage::UseUniform);
   return WGSL_TEMPLATE_APPLY(shader, "quantization/subgroup_matrix_matmul_nbits_prepack.wgsl.template",
+                             WGSL_TEMPLATE_PARAMETER(scalar_copy, scalar_copy_),
                              WGSL_TEMPLATE_PARAMETER(sg_mat_k, k_),
                              WGSL_TEMPLATE_PARAMETER(sg_mat_m, m_));
 }
@@ -63,7 +64,7 @@ Status GenerateShaderCode16x16x16(ShaderHelper& shader,
                                   const ShaderVariableHelper& output,
                                   uint32_t nbits, const SubgroupMatrixConfig& config, uint32_t tile_size_m,
                                   uint32_t tile_size_n, uint32_t tile_size_k, bool has_zero_points, bool has_bias,
-                                  bool has_weight_idx, bool has_weight_idx_indirect) {
+                                  bool has_weight_idx, bool has_weight_idx_indirect, bool zero_points_float) {
   // Use the configurable tiled shader for the 16x16x16 configs.
   return WGSL_TEMPLATE_APPLY(shader, "quantization/subgroup_matrix_matmul_nbits_16x16x16_128.wgsl.template",
                              WGSL_TEMPLATE_PARAMETER(has_bias, has_bias),
@@ -78,6 +79,7 @@ Status GenerateShaderCode16x16x16(ShaderHelper& shader,
                              WGSL_TEMPLATE_PARAMETER(tile_size_k, tile_size_k),
                              WGSL_TEMPLATE_PARAMETER(tile_size_m, tile_size_m),
                              WGSL_TEMPLATE_PARAMETER(tile_size_n, tile_size_n),
+                             WGSL_TEMPLATE_PARAMETER(zero_points_float, zero_points_float),
                              WGSL_TEMPLATE_VARIABLE(input_b, b),
                              WGSL_TEMPLATE_VARIABLE(output, output),
                              WGSL_TEMPLATE_VARIABLE(scales_b, scales_b));
@@ -88,7 +90,7 @@ Status GenerateShaderCode8x16x16(ShaderHelper& shader,
                                  const ShaderVariableHelper& scales_b,
                                  const ShaderVariableHelper& output,
                                  uint32_t nbits, const SubgroupMatrixConfig& config, bool has_zero_points, bool has_bias, bool has_weight_idx, bool has_weight_idx_indirect,
-                                 uint32_t tile_m, uint32_t tile_n, bool has_tail_buffer) {
+                                 uint32_t tile_m, uint32_t tile_n, bool has_tail_buffer, bool zero_points_float) {
   return WGSL_TEMPLATE_APPLY(shader, "quantization/subgroup_matrix_matmul_nbits_8x16x16.wgsl.template",
                              WGSL_TEMPLATE_PARAMETER(has_bias, has_bias),
                              WGSL_TEMPLATE_PARAMETER(has_tail_buffer, has_tail_buffer),
@@ -102,6 +104,7 @@ Status GenerateShaderCode8x16x16(ShaderHelper& shader,
                              WGSL_TEMPLATE_PARAMETER(sg_mat_n, config.N),
                              WGSL_TEMPLATE_PARAMETER(tile_m, tile_m),
                              WGSL_TEMPLATE_PARAMETER(tile_n, tile_n),
+                             WGSL_TEMPLATE_PARAMETER(zero_points_float, zero_points_float),
                              WGSL_TEMPLATE_VARIABLE(input_b, b),
                              WGSL_TEMPLATE_VARIABLE(output, output),
                              WGSL_TEMPLATE_VARIABLE(scales_b, scales_b));
@@ -109,7 +112,7 @@ Status GenerateShaderCode8x16x16(ShaderHelper& shader,
 
 Status GenerateShaderCode8x8x8(ShaderHelper& shader, const ShaderVariableHelper& a, const ShaderVariableHelper& b,
                                const ShaderVariableHelper& scales_b,
-                               const ShaderVariableHelper& output, uint32_t nbits, bool has_zero_points, bool has_bias, bool has_weight_idx, bool has_weight_idx_indirect) {
+                               const ShaderVariableHelper& output, uint32_t nbits, bool has_zero_points, bool has_bias, bool has_weight_idx, bool has_weight_idx_indirect, bool zero_points_float) {
   return WGSL_TEMPLATE_APPLY(shader, "quantization/subgroup_matrix_matmul_nbits_8x8x8.wgsl.template",
                              WGSL_TEMPLATE_PARAMETER(has_bias, has_bias),
                              WGSL_TEMPLATE_PARAMETER(has_weight_idx, has_weight_idx),
@@ -117,6 +120,7 @@ Status GenerateShaderCode8x8x8(ShaderHelper& shader, const ShaderVariableHelper&
                              WGSL_TEMPLATE_PARAMETER(has_zero_points, has_zero_points),
                              WGSL_TEMPLATE_PARAMETER(n_bits, nbits),
                              WGSL_TEMPLATE_PARAMETER(output_type_i32, false),
+                             WGSL_TEMPLATE_PARAMETER(zero_points_float, zero_points_float),
                              WGSL_TEMPLATE_VARIABLE(a, a),
                              WGSL_TEMPLATE_VARIABLE(b, b),
                              WGSL_TEMPLATE_VARIABLE(output, output),
@@ -137,19 +141,20 @@ Status SubgroupMatrixMatMulNBitsProgram::GenerateShaderCode(ShaderHelper& shader
     shader.AddInput("weight_index_indirect", ShaderUsage::UseUniform);
   }
   const auto& output = shader.AddOutput("output", ShaderUsage::UseUniform | ShaderUsage::UseElementTypeAlias);
+  const bool zero_points_float = has_zero_points_ && HasFloatZeroPoints(Inputs()[3].tensor);
   if (has_tail_buffer_) {
     shader.AddOutput("tail_output", ShaderUsage::None);
   }
 
   if (config_.Is(8, 8, 8)) {
-    return GenerateShaderCode8x8x8(shader, a, b, scales_b, output, nbits_, has_zero_points_, has_bias_, has_weight_idx_, has_weight_idx_indirect_);
+    return GenerateShaderCode8x8x8(shader, a, b, scales_b, output, nbits_, has_zero_points_, has_bias_, has_weight_idx_, has_weight_idx_indirect_, zero_points_float);
   } else if (config_.Is(8, 16, 16)) {
-    return GenerateShaderCode8x16x16(shader, b, scales_b, output, nbits_, config_, has_zero_points_, has_bias_, has_weight_idx_, has_weight_idx_indirect_, tile_m_, tile_n_, has_tail_buffer_);
+    return GenerateShaderCode8x16x16(shader, b, scales_b, output, nbits_, config_, has_zero_points_, has_bias_, has_weight_idx_, has_weight_idx_indirect_, tile_m_, tile_n_, has_tail_buffer_, zero_points_float);
   } else if (config_.Is(16, 16, 16)) {
     return GenerateShaderCode16x16x16(shader, b, scales_b, output, nbits_, config_, tile_m_,
                                       tile_n_, tile_k_,
                                       has_zero_points_, has_bias_, has_weight_idx_,
-                                      has_weight_idx_indirect_);
+                                      has_weight_idx_indirect_, zero_points_float);
   } else {
     return Status(onnxruntime::common::ONNXRUNTIME, onnxruntime::common::NOT_IMPLEMENTED,
                   "Unsupported subgroup matrix config dimensions.");
@@ -248,6 +253,13 @@ Status ApplySubgroupMatrixMatMulNBits(const Tensor* a, const Tensor* b, const Te
       tile_m = 128;
       tile_n = 128;
       workgroup_size = 4 * config.subgroupSize;
+      // Larger K tiles amortize dequantization barriers on tall wave32 workloads.
+      // Account for padded B storage and one output staging tile per subgroup.
+      constexpr uint32_t kWideTileStorageBytes = (128 * (64 + 8) + 4 * 16 * 16) * sizeof(uint16_t);
+      if (M >= 256 && K % 64 == 0 &&
+          context.DeviceLimits().maxComputeWorkgroupStorageSize >= kWideTileStorageBytes) {
+        tile_size_k = 64;
+      }
     }
   }
   ORT_ENFORCE(workgroup_size <= context.DeviceLimits().maxComputeWorkgroupSizeX &&
@@ -261,7 +273,9 @@ Status ApplySubgroupMatrixMatMulNBits(const Tensor* a, const Tensor* b, const Te
     const auto k = config.K;
 
     // Optimize the layout of input matrix A(MxK) for SubgroupMatrixLoad.
-    PrepackProgram prepack_program{m, k};
+    const bool scalar_copy = context.AdapterInfo().vendor == std::string_view{"nvidia"} &&
+                             context.AdapterInfo().backendType == wgpu::BackendType::Vulkan;
+    PrepackProgram prepack_program{m, k, scalar_copy};
     prepack_program.SetWorkgroupSize(config.subgroupSize);
     if (context.HasFeature(wgpu::FeatureName::SubgroupSizeControl)) {
       prepack_program.SetSubgroupSize(config.subgroupSize);
@@ -280,7 +294,7 @@ Status ApplySubgroupMatrixMatMulNBits(const Tensor* a, const Tensor* b, const Te
     prepack_program.AddInputs({{a, ProgramTensorMetadataDependency::TypeAndRank, 1}})
         .AddOutputs({{&a_prepack, ProgramTensorMetadataDependency::Rank, a_prepack.Shape(), 1}})
         .AddUniformVariables({{M}, {K}})
-        .CacheHint(m, k);
+        .CacheHint(m, k, scalar_copy);
     ORT_RETURN_IF_ERROR(context.RunProgram(prepack_program));
     a = &a_prepack;
   }
@@ -320,7 +334,7 @@ Status ApplySubgroupMatrixMatMulNBits(const Tensor* a, const Tensor* b, const Te
                  tile_m, tile_n, tile_size_k, has_zero_points, has_bias, has_weight_idx,
                  has_weight_idx_indirect, has_tail_buffer);
   if (has_zero_points) {
-    matmul_program.AddInput({zero_points, ProgramTensorMetadataDependency::None, {(zero_points->Shape().Size() + 3) / 4}, 4});
+    matmul_program.AddInput(MakeMatMulZeroPointInput(zero_points));
   }
   if (bias) {
     matmul_program.AddInput({bias, ProgramTensorMetadataDependency::None});

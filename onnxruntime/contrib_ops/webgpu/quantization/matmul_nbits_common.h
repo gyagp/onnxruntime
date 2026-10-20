@@ -11,6 +11,7 @@ class Tensor;
 
 namespace webgpu {
 class ComputeContext;
+struct ProgramInput;
 }  // namespace webgpu
 }  // namespace onnxruntime
 
@@ -19,6 +20,9 @@ namespace contrib {
 namespace webgpu {
 
 inline constexpr uint32_t kMinMForTileOptimization = 4u;
+
+bool HasFloatZeroPoints(const Tensor* zero_points);
+onnxruntime::webgpu::ProgramInput MakeMatMulZeroPointInput(const Tensor* zero_points);
 
 /**
  * Generates WebGPU shader code for reading zero points in quantized matrix multiplication
