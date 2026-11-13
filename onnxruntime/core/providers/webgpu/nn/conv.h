@@ -24,7 +24,7 @@ namespace webgpu {
 // than inferred from which prepacked tensor happens to be present.
 enum class KernelLayout {
   OIHW,  // No prepacked tensor -- the kernel is read straight from input 1.
-  HWIO,  // Consumed by grouped conv, the 1x1/same_size MatMul path and Conv2dMM.
+  HWIO,  // HWIO (2D) or DHWIO (3D); consumed by tiled Conv and channels-last pointwise MatMul.
   OHWI,  // Consumed by the Im2ColMatMul path only.
 };
 

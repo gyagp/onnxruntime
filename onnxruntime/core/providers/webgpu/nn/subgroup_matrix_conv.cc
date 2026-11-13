@@ -96,6 +96,10 @@ class SubgroupMatrixConvImpl final : public Conv<is_channels_last, is_fused>::Co
     if (input == nullptr || weight == nullptr) {
       return Status::OK();
     }
+    // This implementation and its packed layouts are specific to Conv2D.
+    if (input->Shape().NumDimensions() != 4 || weight->Shape().NumDimensions() != 4) {
+      return Status::OK();
+    }
     TensorShape weight_shape = weight->Shape();
     switch (kernel_layout) {
       case KernelLayout::OIHW:

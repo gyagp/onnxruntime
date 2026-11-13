@@ -2,8 +2,9 @@
 // Licensed under the MIT License.
 
 #include "core/providers/webgpu/nn/conv.h"
+#include "core/common/safeint.h"
 #include "core/providers/webgpu/nn/conv2d_mm.h"
-#include "core/providers/webgpu/nn/conv3d_naive.h"
+#include "core/providers/webgpu/nn/conv3d_mm.h"
 #include "core/providers/webgpu/nn/im2col_matmul.h"
 #include "core/providers/webgpu/nn/subgroup_matrix_conv.h"
 #include "core/providers/webgpu/shader_helper.h"
@@ -106,9 +107,14 @@ Status Conv<is_channels_last, is_fused>::ComputeInternal(ComputeContext& context
   switch (kernel_layout_) {
     case KernelLayout::OIHW:
       break;
-    case KernelLayout::HWIO:
-      kernel_shape = TensorShape(TensorShapeVector{kernel_shape[3], kernel_shape[2], kernel_shape[0], kernel_shape[1]});
-      break;
+    case KernelLayout::HWIO: {
+      const auto rank = kernel_shape.NumDimensions();
+      TensorShapeVector logical_shape{kernel_shape[rank - 1], kernel_shape[rank - 2]};
+      for (size_t i = 0; i < rank - 2; ++i) {
+        logical_shape.push_back(kernel_shape[i]);
+      }
+      kernel_shape = TensorShape(logical_shape);
+    } break;
     case KernelLayout::OHWI:
       kernel_shape = TensorShape(TensorShapeVector{kernel_shape[0], kernel_shape[3], kernel_shape[1], kernel_shape[2]});
       break;
@@ -128,41 +134,44 @@ Status Conv<is_channels_last, is_fused>::ComputeInternal(ComputeContext& context
   if (rank > 5) {
     return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT, "Only Conv1d, Conv2d, and Conv3d are supported.");
   } else if (rank == 5) {
-    // Conv3D - use naive per-element shader (matching JS implementation)
     if (conv_attrs_.group != 1) {
       return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT,
                              "Conv3D does not support grouped convolution (group=", conv_attrs_.group, ").");
     }
-    const auto output_size = static_cast<uint32_t>(output_shape.Size());
-    const auto kernel_depth = static_cast<uint32_t>(kernel_shape[2]);
-    const auto kernel_height = static_cast<uint32_t>(kernel_shape[3]);
-    const auto kernel_width = static_cast<uint32_t>(kernel_shape[4]);
-    // pads: head padding values for each spatial dim (front, top, left)
-    std::vector<uint32_t> pads_3d{pads[0], pads[1], pads[2]};
-    // Extract spatial dims and channels for explicit uniforms
-    const auto x_depth = static_cast<uint32_t>(input_shape[is_channels_last ? 1 : 2]);
-    const auto x_height = static_cast<uint32_t>(input_shape[is_channels_last ? 2 : 3]);
-    const auto x_width = static_cast<uint32_t>(input_shape[is_channels_last ? 3 : 4]);
-    const auto x_channels = static_cast<uint32_t>(input_shape[is_channels_last ? 4 : 1]);
-    Conv3DNaiveProgram program(activation_, has_bias, is_channels_last);
-    program.CacheHint(activation_.CacheKey(), std::to_string(is_channels_last))
-        .AddInput({input, ProgramTensorMetadataDependency::TypeAndRank, input_shape, 1})
-        .AddInput({kernel, ProgramTensorMetadataDependency::TypeAndRank, kernel_shape, 1})
-        .AddOutput({output, ProgramTensorMetadataDependency::TypeAndRank, output_shape, 1})
-        .AddUniformVariables({{output_size},
-                              {std::vector<uint32_t>{kernel_depth, kernel_height, kernel_width}},
-                              {pads_3d},
-                              {strides},
-                              {dilations},
-                              {std::vector<uint32_t>{x_depth, x_height, x_width}},
-                              {x_channels}})
-        .SetDispatchGroupSize((output_size + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE);
-    // Activation uniforms must remain last because definitions and values are matched by index.
-    AppendActivationUniformsData(activation_, program);
-    if (has_bias) {
-      program.AddInput({bias, ProgramTensorMetadataDependency::TypeAndRank, bias->Shape(), 1});
+    if (output_shape.Size() == 0) {
+      return Status::OK();
     }
-    return context.RunProgram(program);
+    const auto input_channels = kernel_shape[1];
+    const size_t spatial_start = is_channels_last ? 1 : 2;
+    const auto input_spatial = SafeInt<int64_t>(input_shape[spatial_start]) *
+                               input_shape[spatial_start + 1] * input_shape[spatial_start + 2];
+    const bool pointwise = kernel_shape.SizeFromDimension(2) == 1 &&
+                           std::all_of(pads.begin(), pads.end(), [](uint32_t p) { return p == 0; }) &&
+                           std::all_of(strides.begin(), strides.end(), [](uint32_t s) { return s == 1; });
+    Tensor transposed_kernel;
+    const Tensor* dhwio_kernel = kernel;
+    if (!pointwise || is_channels_last) {
+      if (kernel_layout_ != KernelLayout::HWIO) {
+        ORT_RETURN_IF_ERROR(TransposeKernel(context, kernel, kernel_shape, &transposed_kernel, {2, 3, 4, 1, 0}));
+        dhwio_kernel = &transposed_kernel;
+      }
+    }
+    if (pointwise) {
+      Tensor matmul_a = is_channels_last
+                            ? CreateTensorView(*input, TensorShape({batch, input_spatial, input_channels}))
+                            : CreateTensorView(*kernel, TensorShape({1, output_channels, input_channels}));
+      Tensor matmul_b = is_channels_last
+                            ? CreateTensorView(*dhwio_kernel, TensorShape({input_channels, output_channels}))
+                            : CreateTensorView(*input, TensorShape({batch, input_channels, input_spatial}));
+      std::vector<const Tensor*> matmul_inputs{&matmul_a, &matmul_b};
+      if (has_bias) {
+        matmul_inputs.push_back(bias);
+      }
+      return matmul_compute_dispatcher_.Compute(context, activation_, matmul_inputs, output, is_channels_last,
+                                                is_channels_last && prepacked_kernel_ != nullptr);
+    }
+    return ApplyConv3dMMProgram(context, activation_, is_channels_last, *input, *dhwio_kernel, bias, *output,
+                                pads, strides, dilations);
   } else if (rank == 4) {
     // Conv2D
   } else if (rank == 3) {
@@ -360,6 +369,26 @@ Status Conv<is_channels_last, is_fused>::PrePackInternal(ComputeContextBase& con
 
   const auto& kernel_shape = tensor.Shape();
   const auto& dims = kernel_shape.GetDims();
+
+  if (dims.size() == 5) {
+    if (conv_attrs_.group != 1) {
+      return Status::OK();
+    }
+    // Channels-first pointwise MatMul reads OIDHW directly. Every other 3D
+    // consumer uses DHWIO, independently of runtime pads/strides and auto_pad.
+    if constexpr (!is_channels_last) {
+      if (kernel_shape.SizeFromDimension(2) == 1) {
+        return Status::OK();
+      }
+    }
+    const InlinedVector<size_t> perm{2, 3, 4, 1, 0};
+    const TensorShape packed_shape{dims[2], dims[3], dims[4], dims[1], dims[0]};
+    prepacked_kernel_ = std::make_unique<Tensor>(tensor.DataType(), packed_shape, alloc);
+    ORT_RETURN_IF_ERROR(Transpose::DoTranspose(context, perm, tensor, *prepacked_kernel_));
+    kernel_layout_ = KernelLayout::HWIO;
+    is_packed = true;
+    return Status::OK();
+  }
 
   // Conv kernels must be 4D: [O, I, H, W]
   if (dims.size() != 4) {
